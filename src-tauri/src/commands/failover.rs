@@ -6,7 +6,7 @@ use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
 use crate::store::AppState;
 use std::str::FromStr;
-use tauri::Emitter;
+use crate::v1_compat::Emitter;
 
 /// 获取故障转移队列
 #[tauri::command]
@@ -77,7 +77,7 @@ pub async fn get_auto_failover_enabled(
 /// 注意：关闭故障转移时不会清除队列，队列内容会保留供下次开启时使用
 #[tauri::command]
 pub async fn set_auto_failover_enabled(
-    app: tauri::AppHandle,
+    app: crate::v1_compat::AppHandle,
     state: tauri::State<'_, AppState>,
     app_type: String,
     enabled: bool,
@@ -161,10 +161,9 @@ pub async fn set_auto_failover_enabled(
     }
 
     // 刷新托盘菜单，确保状态同步
-    if let Ok(new_menu) = crate::tray::create_tray_menu(&app, &state) {
-        if let Some(tray) = app.tray_by_id("main") {
-            let _ = tray.set_menu(Some(new_menu));
-        }
+    if let Ok(new_menu) = crate::tray::create_system_tray_menu(&app, &state) {
+        let tray = app.tray_handle();
+        let _ = tray.set_menu(new_menu);
     }
 
     Ok(())

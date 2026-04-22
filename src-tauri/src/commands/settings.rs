@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
-use tauri::AppHandle;
+use crate::v1_compat::AppHandle;
+use tauri::Manager;
 
 fn merge_settings_for_save(
     mut incoming: crate::settings::AppSettings,
@@ -42,11 +43,7 @@ pub async fn save_settings(settings: crate::settings::AppSettings) -> Result<boo
 /// 重启应用程序（当 app_config_dir 变更后使用）
 #[tauri::command]
 pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
-    // 在后台延迟重启，让函数有时间返回响应
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        app.restart();
-    });
+    tauri::api::process::restart(&app.env());
     Ok(true)
 }
 

@@ -15,7 +15,7 @@ use crate::services::provider::{
 use serde_json::{json, Value};
 use std::str::FromStr;
 use std::sync::Arc;
-use tauri::Emitter;
+use crate::v1_compat::Emitter;
 use tokio::sync::RwLock;
 
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
@@ -40,7 +40,7 @@ pub struct ProxyService {
     db: Arc<Database>,
     server: Arc<RwLock<Option<ProxyServer>>>,
     /// AppHandle，用于传递给 ProxyServer 以支持故障转移时的 UI 更新
-    app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
+    app_handle: Arc<RwLock<Option<crate::v1_compat::AppHandle>>>,
     switch_locks: SwitchLockManager,
 }
 
@@ -147,7 +147,7 @@ impl ProxyService {
     }
 
     /// 设置 AppHandle（在应用初始化时调用）
-    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+    pub fn set_app_handle(&self, handle: crate::v1_compat::AppHandle) {
         futures::executor::block_on(async {
             *self.app_handle.write().await = Some(handle);
         });

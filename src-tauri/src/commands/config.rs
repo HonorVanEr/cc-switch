@@ -1,8 +1,7 @@
 #![allow(non_snake_case)]
 
-use tauri::AppHandle;
-use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_opener::OpenerExt;
+use crate::v1_compat::AppHandle;
+use tauri::Manager;
 
 use crate::app_config::AppType;
 use crate::codex_config;
@@ -136,9 +135,7 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
         std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败: {e}"))?;
     }
 
-    handle
-        .opener()
-        .open_path(config_dir.to_string_lossy().to_string(), None::<String>)
+    tauri::api::shell::open(&handle.shell_scope(), config_dir.to_string_lossy().to_string(), None)
         .map_err(|e| format!("打开文件夹失败: {e}"))?;
 
     Ok(true)
@@ -154,22 +151,18 @@ pub async fn pick_directory(
         .filter(|p| !p.is_empty());
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let mut builder = app.dialog().file();
+        let mut builder = tauri::api::dialog::blocking::FileDialogBuilder::new();
         if let Some(path) = initial {
             builder = builder.set_directory(path);
         }
-        builder.blocking_pick_folder()
+        builder.pick_folder()
     })
     .await
     .map_err(|e| format!("弹出目录选择器失败: {e}"))?;
 
     match result {
         Some(file_path) => {
-            let resolved = file_path
-                .simplified()
-                .into_path()
-                .map_err(|e| format!("解析选择的目录失败: {e}"))?;
-            Ok(Some(resolved.to_string_lossy().to_string()))
+            Ok(Some(file_path.to_string_lossy().to_string()))
         }
         None => Ok(None),
     }
@@ -189,9 +182,7 @@ pub async fn open_app_config_folder(handle: AppHandle) -> Result<bool, String> {
         std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败: {e}"))?;
     }
 
-    handle
-        .opener()
-        .open_path(config_dir.to_string_lossy().to_string(), None::<String>)
+    tauri::api::shell::open(&handle.shell_scope(), config_dir.to_string_lossy().to_string(), None)
         .map_err(|e| format!("打开文件夹失败: {e}"))?;
 
     Ok(true)

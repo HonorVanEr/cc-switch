@@ -294,7 +294,7 @@ pub async fn get_provider_health(
 /// 2. 如果恢复的供应商在队列中优先级更高（queue_order 更小），则自动切换
 #[tauri::command]
 pub async fn reset_circuit_breaker(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::v1_compat::AppHandle,
     state: tauri::State<'_, AppState>,
     provider_id: String,
     app_type: String,

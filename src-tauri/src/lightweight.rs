@@ -1,13 +1,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::Manager;
+use crate::v1_compat::{AppHandle, get_main_window, unminimize_window, destroy_window};
 
 static LIGHTWEIGHT_MODE: AtomicBool = AtomicBool::new(false);
 
-pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
+pub fn enter_lightweight_mode(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = get_main_window(app) {
             let _ = window.set_skip_taskbar(true);
         }
     }
@@ -16,12 +17,10 @@ pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
         crate::tray::apply_tray_policy(app, false);
     }
 
-    if let Some(window) = app.get_webview_window("main") {
-        window
-            .destroy()
+    if let Some(window) = get_main_window(app) {
+        destroy_window(&window)
             .map_err(|e| format!("销毁主窗口失败: {e}"))?;
     }
-    // else: already in lightweight mode or window not found, just set the flag
 
     LIGHTWEIGHT_MODE.store(true, Ordering::Release);
     crate::tray::refresh_tray_menu(app);
@@ -29,16 +28,14 @@ pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
-    use tauri::WebviewWindowBuilder;
-
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
+pub fn exit_lightweight_mode(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = get_main_window(app) {
+        let _ = unminimize_window(&window);
         let _ = window.show();
         let _ = window.set_focus();
         #[cfg(target_os = "linux")]
         {
-            crate::linux_fix::nudge_main_window(window.clone());
+            crate::linux_fix::nudge_main_window(window);
         }
         #[cfg(target_os = "windows")]
         {
@@ -54,31 +51,21 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let window_config = app
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|w| w.label == "main")
-        .ok_or("主窗口配置未找到")?;
-
-    WebviewWindowBuilder::from_config(app, window_config)
-        .map_err(|e| format!("加载主窗口配置失败: {e}"))?
+    // In v1, we need to recreate the window differently
+    let window = tauri::WindowBuilder::new(app, "main", tauri::WindowUrl::App("index.html".into()))
         .visible(true)
         .build()
         .map_err(|e| format!("创建主窗口失败: {e}"))?;
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_focus();
-        #[cfg(target_os = "linux")]
-        {
-            crate::linux_fix::nudge_main_window(window.clone());
-        }
+    let _ = window.set_focus();
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux_fix::nudge_main_window(window);
     }
 
     #[cfg(target_os = "windows")]
     {
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = get_main_window(app) {
             let _ = window.set_skip_taskbar(false);
         }
     }

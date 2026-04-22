@@ -6,7 +6,7 @@ authors = ["Jason Young"]
 license = "MIT"
 repository = "https://github.com/farion1231/cc-switch"
 edition = "2021"
-rust-version = "1.85.0"
+rust-version = "1.70.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,21 +20,18 @@ default = []
 test-hooks = []
 
 [build-dependencies]
-tauri-build = { version = "2.4.0", features = [] }
+tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
-tauri = { version = "2.8.2", features = ["tray-icon", "protocol-asset", "image-png"] }
-tauri-plugin-log = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-store = "2"
-tauri-plugin-deep-link = "2"
+tauri = { version = "1.6", features = ["api-all", "devtools", "updater", "system-tray"] }
+env_logger = "0.11"
+tauri-plugin-log = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1", features = ["colored"] }
+tauri-plugin-store = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1" }
+tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1" }
 dirs = "5.0"
 toml = "0.8"
 toml_edit = "0.22"
@@ -79,11 +76,8 @@ sha2 = "0.10"
 json5 = "0.4"
 json-five = "0.3.1"
 
-[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "2"
-
 [target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = { version = "2.0.1", features = ["v2_16"] }
+webkit2gtk = { version = "0.18.2", features = ["v2_22"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
@@ -97,7 +91,6 @@ objc2-app-kit = { version = "0.2", features = ["NSColor"] }
 codegen-units = 1
 lto = "thin"
 opt-level = "s"
-# 使用 unwind 以便 panic hook 能捕获 backtrace（abort 会直接终止无法捕获）
 panic = "unwind"
 strip = "symbols"
 

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/tauri";
 import type { SessionMessage, SessionMeta } from "@/types";
 
 export interface DeleteSessionOptions {

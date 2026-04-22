@@ -9,7 +9,8 @@ use crate::database::Database;
 use crate::error::AppError;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use crate::v1_compat::Emitter;
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 /// 故障转移切换管理器
@@ -40,7 +41,7 @@ impl FailoverSwitchManager {
     /// - `Err(e)` - 切换过程中发生错误
     pub async fn try_switch(
         &self,
-        app_handle: Option<&tauri::AppHandle>,
+        app_handle: Option<&crate::v1_compat::AppHandle>,
         app_type: &str,
         provider_id: &str,
         provider_name: &str,
@@ -73,7 +74,7 @@ impl FailoverSwitchManager {
 
     async fn do_switch(
         &self,
-        app_handle: Option<&tauri::AppHandle>,
+        app_handle: Option<&crate::v1_compat::AppHandle>,
         app_type: &str,
         provider_id: &str,
         provider_name: &str,
@@ -110,11 +111,10 @@ impl FailoverSwitchManager {
                     return Ok(false);
                 }
 
-                if let Ok(new_menu) = crate::tray::create_tray_menu(app, app_state.inner()) {
-                    if let Some(tray) = app.tray_by_id("main") {
-                        if let Err(e) = tray.set_menu(Some(new_menu)) {
-                            log::error!("[Failover] 更新托盘菜单失败: {e}");
-                        }
+                if let Ok(new_menu) = crate::tray::create_system_tray_menu(app, app_state.inner()) {
+                    let tray = app.tray_handle();
+                    if let Err(e) = tray.set_menu(new_menu) {
+                        log::error!("[Failover] 更新托盘菜单失败: {e}");
                     }
                 }
             }

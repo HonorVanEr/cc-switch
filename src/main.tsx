@@ -1,3 +1,4 @@
+import "./polyfill";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
@@ -10,9 +11,9 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { queryClient } from "@/lib/query";
 import { Toaster } from "@/components/ui/sonner";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { message } from "@tauri-apps/plugin-dialog";
-import { exit } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/tauri";
+import { message } from "@tauri-apps/api/dialog";
+import { exit } from "@tauri-apps/api/process";
 
 // 根据平台添加 body class，便于平台特定样式
 try {
@@ -53,7 +54,7 @@ async function handleConfigLoadError(
       title: i18n.t("errors.configLoadFailedTitle", {
         defaultValue: "配置加载失败",
       }),
-      kind: "error",
+      type: "error",
     },
   );
 

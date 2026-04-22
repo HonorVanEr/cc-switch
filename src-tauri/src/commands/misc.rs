@@ -8,9 +8,9 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tauri::AppHandle;
+use crate::v1_compat::AppHandle;
+use tauri::Manager;
 use tauri::State;
-use tauri_plugin_opener::OpenerExt;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -27,8 +27,8 @@ pub async fn open_external(app: AppHandle, url: String) -> Result<bool, String> 
         format!("https://{url}")
     };
 
-    app.opener()
-        .open_url(&url, None::<String>)
+    // Tauri v1: use tauri::api::shell::open
+    tauri::api::shell::open(&app.shell_scope(), url, None)
         .map_err(|e| format!("打开链接失败: {e}"))?;
 
     Ok(true)
@@ -53,12 +53,7 @@ pub async fn copy_text_to_clipboard(text: String) -> Result<bool, String> {
 /// 检查更新
 #[tauri::command]
 pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
-    handle
-        .opener()
-        .open_url(
-            "https://github.com/farion1231/cc-switch/releases/latest",
-            None::<String>,
-        )
+    tauri::api::shell::open(&handle.shell_scope(), "https://github.com/farion1231/cc-switch/releases/latest".to_string(), None)
         .map_err(|e| format!("打开更新页面失败: {e}"))?;
 
     Ok(true)
@@ -1313,16 +1308,10 @@ fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), S
 /// 设置窗口主题（Windows/macOS 标题栏颜色）
 /// theme: "dark" | "light" | "system"
 #[tauri::command]
-pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<(), String> {
-    use tauri::Theme;
-
-    let tauri_theme = match theme.as_str() {
-        "dark" => Some(Theme::Dark),
-        "light" => Some(Theme::Light),
-        _ => None, // system default
-    };
-
-    window.set_theme(tauri_theme).map_err(|e| e.to_string())
+pub async fn set_window_theme(window: tauri::Window, _theme: String) -> Result<(), String> {
+    // Tauri v1 does not support set_theme; this is a no-op
+    let _ = window;
+    Ok(())
 }
 
 #[cfg(test)]

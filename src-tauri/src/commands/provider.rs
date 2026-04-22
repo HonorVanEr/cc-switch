@@ -406,7 +406,7 @@ pub fn update_providers_sort_order(
 
 use crate::provider::UniversalProvider;
 use std::collections::HashMap;
-use tauri::{AppHandle, Emitter};
+use crate::v1_compat::{AppHandle, Emitter};
 
 #[derive(Clone, serde::Serialize)]
 pub struct UniversalProviderSyncedEvent {
