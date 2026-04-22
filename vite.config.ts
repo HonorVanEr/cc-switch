@@ -34,6 +34,8 @@ function babelPrivateFieldsPlugin(): Plugin {
               throw e;
             }
           }
+          
+          chunk.code = chunk.code.replace(/\binset-0\b/g, "top-0 left-0 right-0 bottom-0");
         }
       }
     },
@@ -62,6 +64,7 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "framer-motion": path.resolve(__dirname, "./src/lib/framer-motion-stub.tsx"),
     },
   },
   clearScreen: false,

@@ -768,7 +768,7 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="fixed top-0 left-0 right-0 bottom-0 bg-black/50 flex items-center justify-center z-50">
         <div className="bg-background rounded-xl p-6 max-w-lg w-full mx-4 shadow-xl max-h-[80vh] flex flex-col">
           <h2 className="text-lg font-semibold mb-2">{t("skills.import")}</h2>
           <p className="text-sm text-muted-foreground mb-4">
