@@ -29,7 +29,7 @@ mod session_manager;
 mod settings;
 mod store;
 
-mod tray;
+// mod tray;  // 系统托盘已禁用，移除 libayatana-appindicator3 依赖
 mod usage_script;
 mod v1_compat;
 
@@ -162,32 +162,7 @@ fn handle_deeplink_url(
     true
 }
 
-/// 更新托盘菜单的Tauri命令
-#[tauri::command]
-async fn update_tray_menu(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, String> {
-    match tray::create_system_tray_menu(&app, state.inner()) {
-        Ok(new_menu) => {
-            let tray = app.tray_handle();
-            tray.set_menu(new_menu)
-                .map_err(|e| format!("更新托盘菜单失败: {e}"))?;
-            return Ok(true);
-        }
-        Err(err) => {
-            log::error!("创建托盘菜单失败: {err}");
-            Ok(false)
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_tray_icon() -> Option<tauri::image::Image<'static>> {
-    const ICON_BYTES: &[u8] = include_bytes!("../icons/tray/macos/statusbar_template_3x.png");
-
-    tauri::image::Image::from_bytes(ICON_BYTES).ok()
-}
+// 系统托盘功能已完全禁用，移除 libayatana-appindicator3 依赖
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -203,32 +178,11 @@ pub fn run() {
         }));
     }
 
-    let system_tray_menu = tray::create_system_tray_menu_template();
-    let system_tray = tauri::SystemTray::new()
-        .with_menu(system_tray_menu)
-        .with_tooltip("CC Switch");
-
     let app = builder
-        .system_tray(system_tray)
-        .on_system_tray_event(|app, event| {
-            if let tauri::SystemTrayEvent::MenuItemClick { id, .. } = event {
-                tray::handle_tray_menu_event(app, &id);
-            }
-        })
         .on_window_event(|event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
-                let settings = crate::settings::get_settings();
-                if settings.minimize_to_tray_on_close {
-                    api.prevent_close();
-                    let window = event.window();
-                    let _ = window.hide();
-                    #[cfg(target_os = "windows")]
-                    { let _ = window.set_skip_taskbar(true); }
-                    #[cfg(target_os = "macos")]
-                    { tray::apply_tray_policy(&window.app_handle(), false); }
-                } else {
-                    event.window().app_handle().exit(0);
-                }
+            if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
+                // System tray disabled - directly exit on close
+                event.window().app_handle().exit(0);
             }
         })
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -345,10 +299,6 @@ pub fn run() {
                 let _ = window.set_decorations(!settings.use_app_window_controls);
                 if settings.silent_startup {
                     let _ = window.hide();
-                    #[cfg(target_os = "windows")]
-                    let _ = window.set_skip_taskbar(true);
-                    #[cfg(target_os = "macos")]
-                    tray::apply_tray_policy(&app.handle(), false);
                 } else {
                     let _ = window.show();
                     #[cfg(target_os = "linux")]
@@ -460,7 +410,7 @@ pub fn run() {
             commands::merge_deeplink_config,
             commands::import_from_deeplink,
             commands::import_from_deeplink_unified,
-            update_tray_menu,
+            // update_tray_menu,  // 托盘已禁用
             commands::check_env_conflicts,
             commands::delete_env_vars,
             commands::restore_env_backup,
@@ -634,7 +584,6 @@ pub fn run() {
                     let _ = unminimize_window(&window);
                     let _ = window.show();
                     let _ = window.set_focus();
-                    tray::apply_tray_policy(app_handle, true);
                 } else if crate::lightweight::is_lightweight_mode() {
                     if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle) {
                         log::error!("退出轻量模式重建窗口失败: {e}");

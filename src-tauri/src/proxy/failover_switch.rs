@@ -111,12 +111,13 @@ impl FailoverSwitchManager {
                     return Ok(false);
                 }
 
-                if let Ok(new_menu) = crate::tray::create_system_tray_menu(app, app_state.inner()) {
-                    let tray = app.tray_handle();
-                    if let Err(e) = tray.set_menu(new_menu) {
-                        log::error!("[Failover] 更新托盘菜单失败: {e}");
-                    }
-                }
+                // 托盘已禁用，移除 libayatana-appindicator3 依赖
+                // if let Ok(new_menu) = crate::tray::create_system_tray_menu(app, app_state.inner()) {
+                //     let tray = app.tray_handle();
+                //     if let Err(e) = tray.set_menu(new_menu) {
+                //         log::error!("[Failover] 更新托盘菜单失败: {e}");
+                //     }
+                // }
             }
 
             // 发射事件到前端

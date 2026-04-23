@@ -160,11 +160,11 @@ pub async fn set_auto_failover_enabled(
         let _ = app.emit("provider-switched", event_data);
     }
 
-    // 刷新托盘菜单，确保状态同步
-    if let Ok(new_menu) = crate::tray::create_system_tray_menu(&app, &state) {
-        let tray = app.tray_handle();
-        let _ = tray.set_menu(new_menu);
-    }
+    // 托盘已禁用，移除 libayatana-appindicator3 依赖
+    // if let Ok(new_menu) = crate::tray::create_system_tray_menu(&app, &state) {
+    //     let tray = app.tray_handle();
+    //     let _ = tray.set_menu(new_menu);
+    // }
 
     Ok(())
 }

@@ -14,7 +14,7 @@ pub fn enter_lightweight_mode(app: &AppHandle) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        crate::tray::apply_tray_policy(app, false);
+        // crate::tray::apply_tray_policy(app, false);  // 托盘已禁用
     }
 
     if let Some(window) = get_main_window(app) {
@@ -23,7 +23,7 @@ pub fn enter_lightweight_mode(app: &AppHandle) -> Result<(), String> {
     }
 
     LIGHTWEIGHT_MODE.store(true, Ordering::Release);
-    crate::tray::refresh_tray_menu(app);
+    // crate::tray::refresh_tray_menu(app);  // 托盘已禁用
     log::info!("进入轻量模式");
     Ok(())
 }
@@ -43,10 +43,10 @@ pub fn exit_lightweight_mode(app: &AppHandle) -> Result<(), String> {
         }
         #[cfg(target_os = "macos")]
         {
-            crate::tray::apply_tray_policy(app, true);
+            // crate::tray::apply_tray_policy(app, true);  // 托盘已禁用
         }
         LIGHTWEIGHT_MODE.store(false, Ordering::Release);
-        crate::tray::refresh_tray_menu(app);
+        // crate::tray::refresh_tray_menu(app);  // 托盘已禁用
         log::info!("退出轻量模式");
         return Ok(());
     }
@@ -71,11 +71,11 @@ pub fn exit_lightweight_mode(app: &AppHandle) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        crate::tray::apply_tray_policy(app, true);
+        // crate::tray::apply_tray_policy(app, true);  // 托盘已禁用
     }
 
     LIGHTWEIGHT_MODE.store(false, Ordering::Release);
-    crate::tray::refresh_tray_menu(app);
+    // crate::tray::refresh_tray_menu(app);  // 托盘已禁用
     log::info!("退出轻量模式");
     Ok(())
 }
