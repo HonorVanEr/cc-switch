@@ -63,6 +63,8 @@ use v1_compat::{AppHandle, Emitter, Manager as V1Manager, Window, get_main_windo
 // In Tauri v1, dialog is part of tauri::api::dialog
 use tauri::api::dialog::{MessageDialogBuilder, MessageDialogButtons, MessageDialogKind};
 
+use tauri_plugin_log::LogTarget;
+
 // v1 does not have deep-link as a plugin; we handle URL events in RunEvent
 // use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -178,6 +180,20 @@ pub fn run() {
         }));
     }
 
+    {
+        let app_config_dir = crate::config::get_home_dir().join(".cc-switch");
+        let log_dir = app_config_dir.join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        builder = builder.plugin(
+            tauri_plugin_log::Builder::default()
+                .targets([
+                    LogTarget::Folder(log_dir),
+                    LogTarget::Stdout,
+                ])
+                .build(),
+        );
+    }
+
     let app = builder
         .on_window_event(|event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
@@ -189,16 +205,6 @@ pub fn run() {
         .setup(|app: &mut tauri::App<tauri::Wry>| {
             app_store::refresh_app_config_dir_override(&app.handle());
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
-
-            {
-                let log_dir = panic_hook::get_log_dir();
-                let _ = std::fs::create_dir_all(&log_dir);
-                let _ = std::fs::remove_file(log_dir.join("cc-switch.log"));
-                #[cfg(debug_assertions)]
-                { let _ = env_logger::Builder::from_default_env().filter_level(log::LevelFilter::Trace).try_init(); }
-                #[cfg(not(debug_assertions))]
-                { let _ = env_logger::Builder::new().filter_level(log::LevelFilter::Info).try_init(); }
-            }
 
             let app_config_dir = crate::config::get_app_config_dir();
             let db_path = app_config_dir.join("cc-switch.db");
