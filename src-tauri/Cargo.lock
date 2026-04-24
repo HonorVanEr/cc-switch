@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "cc-switch"
-version = "3.13.1-fyr-beta"
+version = "3.13.2-fyr-beta"
 dependencies = [
  "anyhow",
  "arboard",
