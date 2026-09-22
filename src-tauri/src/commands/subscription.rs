@@ -1,5 +1,6 @@
 use std::str::FromStr;
-use tauri::{Emitter, State};
+use tauri::State;
+use crate::v1_compat::Emitter;
 
 use crate::app_config::AppType;
 use crate::services::subscription::{CredentialStatus, SubscriptionQuota};
@@ -35,7 +36,7 @@ pub async fn get_subscription_quota(
             log::error!("emit usage-cache-updated (subscription) 失败: {e}");
         }
         state.usage_cache.put_subscription(app_type, snapshot);
-        crate::tray::schedule_tray_refresh(&app);
+        // crate::tray::schedule_tray_refresh(&app);  // 托盘已禁用
     }
     inner
 }

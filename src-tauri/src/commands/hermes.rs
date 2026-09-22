@@ -1,6 +1,5 @@
 use std::time::Duration;
-use tauri::{AppHandle, State};
-use tauri_plugin_opener::OpenerExt;
+use tauri::{AppHandle, Manager, State};
 
 use crate::hermes_config;
 use crate::store::AppState;
@@ -124,8 +123,7 @@ pub async fn open_hermes_web_ui(app: AppHandle, path: Option<String>) -> Result<
         _ => format!("{base}/"),
     };
 
-    app.opener()
-        .open_url(&target, None::<String>)
+    tauri::api::shell::open(&app.shell_scope(), &target, None)
         .map_err(|e| format!("failed to open Hermes Web UI: {e}"))
 }
 

@@ -10,6 +10,7 @@ mod database;
 mod deeplink;
 mod error;
 mod gemini_config;
+mod hermes_config;
 mod gemini_mcp;
 mod init_status;
 mod lightweight;
