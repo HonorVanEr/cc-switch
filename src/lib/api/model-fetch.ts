@@ -7,18 +7,73 @@ export interface FetchedModel {
   ownedBy: string | null;
 }
 
+export interface ModelFetchOptions {
+  apiFormat?: string;
+  requestHeaders?: Record<string, string>;
+}
+
 /**
  * 从供应商获取可用模型列表
  *
- * 使用 OpenAI 兼容的 GET /v1/models 端点。
- * 主要面向第三方聚合站（硅基流动、OpenRouter 等）。
+ * 使用 OpenAI 兼容的 GET /v1/models 端点。优先用 `modelsUrl` 精确覆写；
+ * 否则后端会对 baseURL 生成候选列表并按序尝试（含"剥离 /anthropic 等兼容子路径"兜底）。
+ *
+ * 该接口可以获取数据格式为
+ * OpenAI Chat Completion {"data": [{"id": "xxx","owned_by": "xxx"}]} 文档：https://developers.openai.com/api/reference/resources/models/methods/list
+ * 和
+ * Anthropic兼容 {"data":[{"id":"xxx"}]} 文档：https://platform.claude.com/docs/en/api/models/list
+ * 这两种端点的模型列表
+ * 特别支持智谱 OpenAI Responses {"models":[{"slug":"xxx"}]} 端点：https://open.bigmodel.cn/api/v1/models
  */
 export async function fetchModelsForConfig(
   baseUrl: string,
   apiKey: string,
   isFullUrl?: boolean,
+  modelsUrl?: string,
+  customUserAgent?: string,
+  options?: ModelFetchOptions,
 ): Promise<FetchedModel[]> {
-  return invoke("fetch_models_for_config", { baseUrl, apiKey, isFullUrl });
+  return invoke("fetch_models_for_config", {
+    baseUrl,
+    apiKey,
+    isFullUrl,
+    modelsUrl,
+    customUserAgent,
+    apiFormat: options?.apiFormat,
+    requestHeaders: options?.requestHeaders,
+  });
+}
+
+export interface OpenCodeModelRef {
+  providerId: string;
+  modelId: string;
+}
+
+/** 获取 OpenCode 当前运行时可用模型（包含 OAuth 与 Zen 免费模型）。 */
+export async function getOpenCodeModels(): Promise<OpenCodeModelRef[]> {
+  return invoke("get_opencode_models");
+}
+
+/**
+ * 获取 Codex OAuth (ChatGPT Plus/Pro 反代) 可用模型列表
+ *
+ * Codex OAuth 使用 ChatGPT 的 backend-api/codex 端点，不兼容普通 /v1/models。
+ */
+export async function fetchCodexOauthModels(
+  accountId?: string | null,
+): Promise<FetchedModel[]> {
+  return invoke("get_codex_oauth_models", {
+    accountId: accountId || null,
+  });
+}
+
+/** 获取当前 xAI OAuth 账号可访问的模型列表。 */
+export async function fetchXaiOauthModels(
+  accountId?: string | null,
+): Promise<FetchedModel[]> {
+  return invoke("get_xai_oauth_models", {
+    accountId: accountId || null,
+  });
 }
 
 /**
@@ -50,8 +105,13 @@ export function showFetchModelsError(
     toast.error(t("providerForm.fetchModelsAuthFailed"));
     return;
   }
+  // 所有候选端点均返回 404/405：供应商可能未开放 /models 接口，或 Base URL 有误
+  if (msg.includes("All candidates failed")) {
+    toast.error(t("providerForm.fetchModelsEndpointNotFound"));
+    return;
+  }
   if (msg.includes("HTTP 404") || msg.includes("HTTP 405")) {
-    toast.error(t("providerForm.fetchModelsNotSupported"));
+    toast.error(t("providerForm.fetchModelsEndpointNotFound"));
     return;
   }
   if (msg.includes("timeout") || msg.includes("timed out")) {

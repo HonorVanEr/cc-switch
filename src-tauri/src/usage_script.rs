@@ -25,12 +25,19 @@ pub async fn execute_usage_script(
 
     // 2. 验证 base_url 的安全性（仅当提供了 base_url 时）
     // 自定义模板模式下，用户可能不使用模板变量，而是直接在脚本中写完整 URL
-    if !base_url.is_empty() {
+    if should_validate_base_url(base_url, is_custom_template) {
         validate_base_url(base_url)?;
     }
 
     // 3. 在独立作用域中提取 request 配置（确保 Runtime/Context 在 await 前释放）
-    let request_config = {
+    // 用量脚本允许的最长执行时间（秒）。脚本来自不可信来源（deeplink、同步导入），
+    // 必须限制其 CPU / 内存 / 栈占用，防止一个恶意/ buggy 脚本挂死整个后端。
+    const USAGE_SCRIPT_TIMEOUT_SECS: u64 = 5;
+    // 16 MiB 对仅构造 request 配置 / extractor 的脚本已经足够。
+    const USAGE_SCRIPT_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+    /// 创建一个受控的 QuickJS Runtime：限制内存与栈，并安装执行时间中断器。
+    fn create_script_runtime() -> Result<Runtime, AppError> {
         let runtime = Runtime::new().map_err(|e| {
             AppError::localized(
                 "usage_script.runtime_create_failed",
@@ -38,6 +45,29 @@ pub async fn execute_usage_script(
                 format!("Failed to create JS runtime: {e}"),
             )
         })?;
+
+        // 内存和栈限制必须在 eval 前设置。
+        runtime.set_memory_limit(USAGE_SCRIPT_MEMORY_LIMIT_BYTES);
+        // set_max_stack_size 默认 256 KiB 够用，这里显式重申请求它保持一致。
+        runtime.set_max_stack_size(256 * 1024);
+
+        // 时间片中断器：每轮解释器循环检查是否超时，超时则抛出不可捕获的异常。
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(USAGE_SCRIPT_TIMEOUT_SECS))
+            .ok_or_else(|| {
+                AppError::localized(
+                    "usage_script.invalid_timeout",
+                    "无法计算脚本执行截止时间",
+                    "Unable to compute script execution deadline",
+                )
+            })?;
+        runtime.set_interrupt_handler(Some(Box::new(move || std::time::Instant::now() > deadline)));
+
+        Ok(runtime)
+    }
+
+    let request_config = {
+        let runtime = create_script_runtime()?;
         let context = Context::full(&runtime).map_err(|e| {
             AppError::localized(
                 "usage_script.context_create_failed",
@@ -112,13 +142,7 @@ pub async fn execute_usage_script(
 
     // 7. 在独立作用域中执行 extractor（确保 Runtime/Context 在函数结束前释放）
     let result: Value = {
-        let runtime = Runtime::new().map_err(|e| {
-            AppError::localized(
-                "usage_script.runtime_create_failed",
-                format!("创建 JS 运行时失败: {e}"),
-                format!("Failed to create JS runtime: {e}"),
-            )
-        })?;
+        let runtime = create_script_runtime()?;
         let context = Context::full(&runtime).map_err(|e| {
             AppError::localized(
                 "usage_script.context_create_failed",
@@ -470,6 +494,10 @@ fn validate_base_url(base_url: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn should_validate_base_url(base_url: &str, is_custom_template: bool) -> bool {
+    !base_url.is_empty() && !is_custom_template
+}
+
 /// 验证请求 URL 是否安全（HTTPS 强制 + 同源检查）
 fn validate_request_url(
     request_url: &str,
@@ -581,6 +609,24 @@ mod tests {
     }
 
     #[test]
+    fn test_custom_template_allows_http_lan_request_with_different_base_url() {
+        assert!(
+            !should_validate_base_url("http://10.37.192.156:8090/anthropic", true),
+            "Custom scripts should not validate an unused provider base_url fallback"
+        );
+
+        let result = validate_request_url(
+            "http://10.37.192.156:18344/user/balance",
+            "http://10.37.192.156:8090/anthropic",
+            true,
+        );
+        assert!(
+            result.is_ok(),
+            "Custom usage scripts should be able to call an explicit HTTP quota endpoint"
+        );
+    }
+
+    #[test]
     fn test_port_comparison() {
         // 测试端口比较逻辑是否正确处理默认端口和显式端口
 
@@ -640,5 +686,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn infinite_loop_usage_script_is_interrupted_before_blocking_the_backend() {
+        // 用量脚本来自不可信输入（deeplink / 同步导入的 DB 行），必须限制 CPU 时间，
+        // 否则 `while(true)` 会挂死执行线程（DoS）。
+        let script = r#"
+            (function(){
+                while (true) { Math.sqrt(Math.random()); }
+            })();
+            ({ request: { url: "https://example.com", method: "GET" } })
+        "#;
+
+        let start = std::time::Instant::now();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("tokio runtime for test")
+            .block_on(execute_usage_script(
+                script,
+                "sk-test",
+                "https://api.example.com",
+                30,
+                None,
+                None,
+                None,
+            ));
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "infinite loop script must be rejected, got: {result:?}"
+        );
+        // 必须明显短于无限等待；留足余量避免 CI 抖动，但应远小于 30 秒网络超时。
+        assert!(
+            elapsed < std::time::Duration::from_secs(15),
+            "interruption took too long: {elapsed:?}"
+        );
     }
 }

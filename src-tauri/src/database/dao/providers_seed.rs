@@ -7,8 +7,13 @@
 //! - `src/config/claudeProviderPresets.ts`（"Claude Official"）
 //! - `src/config/codexProviderPresets.ts`（"OpenAI Official"）
 //! - `src/config/geminiProviderPresets.ts`（"Google Official"）
+//! - `src/components/providers/forms/GrokBuildProviderForm.tsx`（"Grok Official"）
 
 use crate::app_config::AppType;
+
+pub(crate) const CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID: &str = "claude-desktop-official";
+pub(crate) const CODEX_OFFICIAL_PROVIDER_ID: &str = "codex-official";
+pub(crate) const GROKBUILD_OFFICIAL_PROVIDER_ID: &str = "grokbuild-official";
 
 /// 单条官方供应商种子定义。
 pub(crate) struct OfficialProviderSeed {
@@ -22,7 +27,7 @@ pub(crate) struct OfficialProviderSeed {
     pub settings_config_json: &'static str,
 }
 
-/// Claude / Codex / Gemini 三个应用的官方预设。
+/// Claude / Claude Desktop / Codex / Gemini 的官方预设。
 ///
 /// id 固定，便于幂等检查；name 直接用英文原名（与前端预设一致），不做 i18n。
 pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
@@ -37,7 +42,17 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         settings_config_json: r#"{"env":{}}"#,
     },
     OfficialProviderSeed {
-        id: "codex-official",
+        id: CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID,
+        app_type: AppType::ClaudeDesktop,
+        name: "Claude Desktop Official",
+        website_url: "https://claude.ai/download",
+        icon: "anthropic",
+        icon_color: "#D4915D",
+        // 空 env 只是占位；切换该 provider 时会恢复 Claude Desktop 1P 模式
+        settings_config_json: r#"{"env":{}}"#,
+    },
+    OfficialProviderSeed {
+        id: CODEX_OFFICIAL_PROVIDER_ID,
         app_type: AppType::Codex,
         name: "OpenAI Official",
         website_url: "https://chatgpt.com/codex",
@@ -56,6 +71,16 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         // 空 env + 空 config 让用户走 Google OAuth
         settings_config_json: r#"{"env":{},"config":{}}"#,
     },
+    OfficialProviderSeed {
+        id: GROKBUILD_OFFICIAL_PROVIDER_ID,
+        app_type: AppType::GrokBuild,
+        name: "Grok Official",
+        website_url: "https://x.ai/grok",
+        icon: "grok",
+        icon_color: "currentColor",
+        // 空 config = 不写自定义模型表，Grok CLI 回落到自带的 xAI OAuth 登录
+        settings_config_json: r#"{"config":""}"#,
+    },
 ];
 
 /// 判断给定的 provider id 是否属于内置官方种子。
@@ -63,4 +88,33 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
 /// 单一事实源：直接扫描 `OFFICIAL_SEEDS`，避免在多处重复维护 id 列表。
 pub(crate) fn is_official_seed_id(id: &str) -> bool {
     OFFICIAL_SEEDS.iter().any(|seed| seed.id == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_seeds_include_claude_desktop() {
+        let seed = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID)
+            .expect("claude desktop official seed");
+
+        assert_eq!(seed.app_type, AppType::ClaudeDesktop);
+        assert!(is_official_seed_id(CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID));
+    }
+
+    #[test]
+    fn official_seeds_include_grokbuild() {
+        let seed = OFFICIAL_SEEDS
+            .iter()
+            .find(|seed| seed.id == GROKBUILD_OFFICIAL_PROVIDER_ID)
+            .expect("grok build official seed");
+
+        assert_eq!(seed.app_type, AppType::GrokBuild);
+        assert!(is_official_seed_id(GROKBUILD_OFFICIAL_PROVIDER_ID));
+        // 空 config = 官方登录态：切换时不注入自定义模型表
+        assert_eq!(seed.settings_config_json, r#"{"config":""}"#);
+    }
 }

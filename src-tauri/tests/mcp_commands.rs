@@ -4,8 +4,9 @@ use std::fs;
 use serde_json::json;
 
 use cc_switch_lib::{
-    get_claude_mcp_path, get_claude_settings_path, import_default_config_test_hook, AppError,
-    AppType, McpApps, McpServer, McpService, MultiAppConfig,
+    get_claude_mcp_path, get_claude_mcp_status, get_claude_settings_path, get_grok_config_path,
+    import_default_config_test_hook, read_claude_mcp_config, update_settings, AppError,
+    AppSettings, AppType, McpApps, McpServer, McpService, MultiAppConfig, ProviderService,
 };
 
 #[path = "support.rs"]
@@ -13,6 +14,141 @@ mod support;
 use support::{
     create_test_state, create_test_state_with_config, ensure_test_home, reset_test_fs, test_mutex,
 };
+
+#[test]
+fn mcode_import_ignores_native_metadata_and_continues_after_conflicts() {
+    let _guard = test_mutex().lock().unwrap();
+    reset_test_fs();
+    let state = create_test_state().unwrap();
+    let path = ensure_test_home().join(".minimax/mcp.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for id in ["a-conflict", "b-shared"] {
+        let server: McpServer = serde_json::from_value(json!({
+            "id":id, "name":id, "server":{"type":"http","url":"https://example.com/mcp"},
+            "apps":{"claude":true}
+        }))
+        .unwrap();
+        state.db.save_mcp_server(&server).unwrap();
+    }
+    let original = json!({"mcpServers":{
+        "a-conflict":{"command":"different"},
+        "b-shared":{"type":"streamable-http","url":"https://example.com/mcp","timeout":5000,"description":"native","tools":[{"name":"tool"}]},
+        "c-new":{"command":"node"}
+    }});
+    fs::write(&path, original.to_string()).unwrap();
+    let error = McpService::import_from_all_apps(&state)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("a-conflict"));
+    assert!(!error.contains("b-shared"));
+    let servers = state.db.get_all_mcp_servers().unwrap();
+    assert!(!servers["a-conflict"].apps.mcode);
+    assert!(servers["b-shared"].apps.mcode && servers["b-shared"].apps.claude);
+    assert!(servers["c-new"].apps.mcode);
+    McpService::sync_enabled_for_app(&state, &AppType::Mcode).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    for field in ["timeout", "description", "tools"] {
+        assert_eq!(
+            written["mcpServers"]["b-shared"][field],
+            original["mcpServers"]["b-shared"][field]
+        );
+    }
+    assert_eq!(
+        written["mcpServers"]["a-conflict"],
+        original["mcpServers"]["a-conflict"]
+    );
+}
+
+#[test]
+fn mcode_write_failures_keep_managed_mcp_state_for_all_write_entries() {
+    let _guard = test_mutex().lock().unwrap();
+    reset_test_fs();
+    let state = create_test_state().unwrap();
+    let path = ensure_test_home().join(".minimax/mcp.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let server: McpServer = serde_json::from_value(json!({
+        "id":"managed", "name":"Managed", "server":{"command":"node"}, "apps":{"mcode":true}
+    }))
+    .unwrap();
+    state.db.save_mcp_server(&server).unwrap();
+    fs::write(&path, "invalid json").unwrap();
+    assert!(McpService::toggle_app(&state, &server.id, AppType::Mcode, false).is_err());
+    let mut disabled = server.clone();
+    disabled.apps.mcode = false;
+    assert!(McpService::upsert_server(&state, disabled.clone()).is_err());
+    let mut edited = server.clone();
+    edited.server = json!({"command":"replacement"});
+    assert!(McpService::upsert_server(&state, edited).is_err());
+    assert!(McpService::delete_server(&state, &server.id).is_err());
+    let current = &state.db.get_all_mcp_servers().unwrap()[&server.id];
+    assert!(current.apps.mcode);
+    assert_eq!(current.server, server.server);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "invalid json");
+    state.db.save_mcp_server(&disabled).unwrap();
+    assert!(McpService::toggle_app(&state, &server.id, AppType::Mcode, true).is_err());
+    assert!(
+        !state.db.get_all_mcp_servers().unwrap()[&server.id]
+            .apps
+            .mcode
+    );
+    fs::write(&path, "{}").unwrap();
+    McpService::toggle_app(&state, &server.id, AppType::Mcode, true).unwrap();
+    assert!(
+        state.db.get_all_mcp_servers().unwrap()[&server.id]
+            .apps
+            .mcode
+    );
+    McpService::toggle_app(&state, &server.id, AppType::Mcode, false).unwrap();
+    assert!(
+        !state.db.get_all_mcp_servers().unwrap()[&server.id]
+            .apps
+            .mcode
+    );
+}
+
+#[test]
+fn mcode_automatic_sync_preserves_unmanaged_same_name_servers() {
+    let _guard = test_mutex().lock().unwrap();
+    reset_test_fs();
+    let state = create_test_state().unwrap();
+    let path = ensure_test_home().join(".minimax/mcp.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let native = json!({"mcpServers":{"context7":{"command":"native-server","enabled":true}}});
+    fs::write(&path, native.to_string()).unwrap();
+    let server = McpServer {
+        id: "context7".into(),
+        name: "Context7".into(),
+        server: json!({"command":"managed-server"}),
+        apps: McpApps {
+            claude: true,
+            ..Default::default()
+        },
+        description: None,
+        homepage: None,
+        docs: None,
+        tags: vec![],
+    };
+    state.db.save_mcp_server(&server).unwrap();
+    let error = McpService::import_from_all_apps(&state).unwrap_err();
+    assert!(error.to_string().contains("context7"));
+    assert!(
+        !state.db.get_all_mcp_servers().unwrap()["context7"]
+            .apps
+            .mcode
+    );
+    McpService::sync_enabled_for_app(&state, &AppType::Mcode).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&path).unwrap()).unwrap(),
+        native
+    );
+    McpService::toggle_app(&state, "context7", AppType::Mcode, true).unwrap();
+    McpService::import_from_all_apps(&state).unwrap();
+    McpService::toggle_app(&state, "context7", AppType::Mcode, false).unwrap();
+    let disabled: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(disabled["mcpServers"].get("context7").is_none());
+}
 
 #[test]
 fn import_default_config_claude_persists_provider() {
@@ -64,6 +200,185 @@ fn import_default_config_claude_persists_provider() {
     assert!(
         db_path.exists(),
         "importing default config should persist to cc-switch.db"
+    );
+}
+
+#[test]
+fn import_default_config_grokbuild_seeds_official_alongside_default() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let config_path = get_grok_config_path();
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).expect("create grok config dir");
+    }
+    fs::write(
+        &config_path,
+        r#"[models]
+default = "grok-4.5"
+
+[model."grok-4.5"]
+model = "grok-4.5"
+base_url = "https://example.com/v1"
+name = "Example"
+api_key = "secret"
+api_backend = "responses"
+context_window = 500000
+"#,
+    )
+    .expect("seed grok config.toml");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect("import default config succeeds");
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers");
+    assert!(
+        providers.get("default").is_some(),
+        "live imported as default"
+    );
+
+    // 初次导入已有配置时应同时补出官方入口（其它应用靠首启动主播种，
+    // grokbuild 种子晚于该 flag，挂在导入动作上）
+    let official = providers
+        .get("grokbuild-official")
+        .expect("official seed ensured alongside import");
+    assert_eq!(official.category.as_deref(), Some("official"));
+
+    // 激活的仍是导入的原配置，官方入口只是备选
+    let current_id = state
+        .db
+        .get_current_provider(AppType::GrokBuild.as_str())
+        .expect("get current provider");
+    assert_eq!(current_id.as_deref(), Some("default"));
+}
+
+#[test]
+fn import_default_config_grokbuild_official_live_imports_official_as_current() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    // 官方登录态的 live：无自定义模型表（允许 MCP 等其它内容）。
+    // 导入的正确结果 = Grok Official 成为当前供应商，而非报错。
+    let config_path = get_grok_config_path();
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).expect("create grok config dir");
+    }
+    fs::write(&config_path, "[mcp_servers.echo]\ncommand = \"echo\"\n")
+        .expect("seed official-mode grok config.toml");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    let imported = import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect("official-mode live imports as the official provider");
+    assert!(imported, "official-mode import should report success");
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers");
+    let official = providers
+        .get("grokbuild-official")
+        .expect("official entry ensured by import");
+    assert_eq!(official.category.as_deref(), Some("official"));
+    assert!(
+        providers.get("default").is_none(),
+        "official-mode live must not be imported as a custom default"
+    );
+
+    let current_id = state
+        .db
+        .get_current_provider(AppType::GrokBuild.as_str())
+        .expect("get current provider");
+    assert_eq!(
+        current_id.as_deref(),
+        Some("grokbuild-official"),
+        "official entry should become current to mirror the live state"
+    );
+}
+
+#[test]
+fn startup_import_grokbuild_official_live_does_not_resurrect_official() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    // 启动自动导入走 service 层（lib.rs 启动循环直接调用它）：官方态 live
+    // 必须报错且不产出任何条目——全项目惯例是启动自动导入只产出 default、
+    // 从不产出官方条目，否则删掉的官方条目每次重启都会复活。
+    // 官方态的成功导入只挂在手动导入的命令层。
+    let config_path = get_grok_config_path();
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).expect("create grok config dir");
+    }
+    fs::write(&config_path, "").expect("seed empty official-mode grok config.toml");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    ProviderService::import_default_config(&state, AppType::GrokBuild)
+        .expect_err("startup auto-import must not import official-mode live");
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers");
+    assert!(
+        providers.is_empty(),
+        "startup auto-import must not create any provider from official-mode live"
+    );
+}
+
+#[test]
+fn import_default_config_grokbuild_broken_custom_live_still_errors() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    // 有自定义痕迹但残缺（[models] 存在、缺 [model.*]）：必须报真实错误，
+    // 不能被误判成官方态静默吞掉；官方入口仍由命令层前置 ensure 补出。
+    let config_path = get_grok_config_path();
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).expect("create grok config dir");
+    }
+    fs::write(&config_path, "[models]\ndefault = \"grok-4.5\"\n")
+        .expect("seed broken custom grok config.toml");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::GrokBuild);
+    let state = create_test_state_with_config(&config).expect("create test state");
+
+    import_default_config_test_hook(&state, AppType::GrokBuild)
+        .expect_err("broken custom config should surface a validation error");
+
+    let providers = state
+        .db
+        .get_all_providers(AppType::GrokBuild.as_str())
+        .expect("get all providers");
+    assert!(
+        providers.get("grokbuild-official").is_some(),
+        "official entry still appears via the pre-import ensure"
+    );
+    assert!(providers.get("default").is_none(), "nothing was imported");
+    let current_id = state
+        .db
+        .get_current_provider(AppType::GrokBuild.as_str())
+        .expect("get current provider");
+    assert_ne!(
+        current_id.as_deref(),
+        Some("grokbuild-official"),
+        "failed import must not silently activate the official entry"
     );
 }
 
@@ -151,6 +466,112 @@ fn import_mcp_from_claude_creates_config_and_enables_servers() {
 }
 
 #[test]
+fn import_mcp_from_codex_does_not_rewrite_codex_config() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let codex_dir = home.join(".codex");
+    fs::create_dir_all(&codex_dir).expect("create codex dir");
+    let config_path = codex_dir.join("config.toml");
+    let original = r#"# keep user formatting intact
+model = "gpt-5"
+
+[mcp.servers.legacy]
+type = "stdio"
+command = "echo"
+
+[mcp_servers.echo]
+type = "stdio"
+command = "echo"
+"#;
+    fs::write(&config_path, original).expect("seed codex config");
+
+    let state = create_test_state().expect("create test state");
+    let changed = McpService::import_from_codex(&state).expect("import from codex");
+    assert!(changed > 0, "should import servers from Codex config");
+
+    let after = fs::read_to_string(&config_path).expect("read codex config");
+    assert_eq!(
+        after, original,
+        "importing from Codex should not rewrite ~/.codex/config.toml"
+    );
+}
+
+#[test]
+fn import_mcp_from_claude_does_not_sync_existing_codex_enabled_server() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    let codex_dir = home.join(".codex");
+    fs::create_dir_all(&codex_dir).expect("create codex dir");
+    let codex_config_path = codex_dir.join("config.toml");
+    let codex_original = r#"[mcp.servers.keep_me]
+type = "stdio"
+command = "echo"
+"#;
+    fs::write(&codex_config_path, codex_original).expect("seed codex config");
+
+    let claude_json = json!({
+        "mcpServers": {
+            "shared": {
+                "type": "stdio",
+                "command": "echo"
+            }
+        }
+    });
+    fs::write(
+        get_claude_mcp_path(),
+        serde_json::to_string_pretty(&claude_json).expect("serialize claude mcp"),
+    )
+    .expect("seed claude mcp");
+
+    let state = create_test_state().expect("create test state");
+    state
+        .db
+        .save_mcp_server(&McpServer {
+            id: "shared".to_string(),
+            name: "shared".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "echo"
+            }),
+            apps: McpApps {
+                claude: false,
+                codex: true,
+                gemini: false,
+                grokbuild: false,
+                opencode: false,
+                hermes: false,
+                mcode: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        })
+        .expect("seed existing mcp server");
+
+    let changed = McpService::import_from_claude(&state).expect("import from claude");
+    assert_eq!(changed, 0, "existing server should not count as new");
+
+    let after = fs::read_to_string(&codex_config_path).expect("read codex config");
+    assert_eq!(
+        after, codex_original,
+        "importing from Claude should not sync an existing Codex-enabled server"
+    );
+
+    let servers = state.db.get_all_mcp_servers().expect("get all mcp servers");
+    let shared = servers.get("shared").expect("shared server exists");
+    assert!(
+        shared.apps.claude,
+        "import should enable Claude in database"
+    );
+    assert!(shared.apps.codex, "existing Codex flag should be preserved");
+}
+
+#[test]
 fn import_mcp_from_claude_invalid_json_preserves_state() {
     use support::create_test_state;
 
@@ -179,6 +600,56 @@ fn import_mcp_from_claude_invalid_json_preserves_state() {
     assert!(
         servers.is_empty(),
         "failed import should not persist any MCP servers to database"
+    );
+}
+
+/// "从应用导入"是 best-effort：单个应用的坏配置文件不阻断其余应用的
+/// 导入，但失败必须聚合上报——历史实现逐应用 `unwrap_or(0)` 吞错，
+/// 坏 config.toml 只会表现为"导入成功 0 个"，用户无从得知出了什么问题。
+#[test]
+fn import_from_all_apps_reports_broken_app_but_imports_the_rest() {
+    use support::create_test_state;
+
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+
+    // 好的 ~/.claude.json：应正常导入
+    let claude_json = json!({
+        "mcpServers": {
+            "alpha": { "type": "stdio", "command": "echo" }
+        }
+    });
+    fs::write(
+        get_claude_mcp_path(),
+        serde_json::to_string_pretty(&claude_json).expect("serialize claude mcp"),
+    )
+    .expect("seed ~/.claude.json");
+
+    // 坏的 ~/.codex/config.toml：解析必然失败
+    let codex_dir = home.join(".codex");
+    fs::create_dir_all(&codex_dir).expect("create codex dir");
+    fs::write(codex_dir.join("config.toml"), "not = = valid toml")
+        .expect("seed broken codex config");
+
+    let state = create_test_state().expect("create test state");
+
+    let err = McpService::import_from_all_apps(&state)
+        .expect_err("broken codex config must surface, not be swallowed as zero imports");
+    let message = err.to_string();
+    assert!(
+        message.contains("codex"),
+        "aggregated error should name the failing app, got: {message}"
+    );
+
+    // Codex 的失败不阻断 Claude：alpha 应已入库并启用 Claude
+    let servers = state.db.get_all_mcp_servers().expect("get all mcp servers");
+    let entry = servers
+        .get("alpha")
+        .expect("claude server imported despite codex failure");
+    assert!(
+        entry.apps.claude,
+        "imported server should have Claude app enabled"
     );
 }
 
@@ -216,8 +687,10 @@ fn set_mcp_enabled_for_codex_writes_live_config() {
                 claude: false,
                 codex: false, // 初始未启用
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,
@@ -281,8 +754,10 @@ fn enabling_codex_mcp_skips_when_codex_dir_missing() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,
@@ -326,8 +801,10 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 claude: true,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,
@@ -360,8 +837,10 @@ fn upsert_mcp_server_disabling_app_removes_from_claude_live_config() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,
@@ -493,8 +972,10 @@ fn enabling_gemini_mcp_skips_when_gemini_dir_missing() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,
@@ -548,8 +1029,10 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,
@@ -566,6 +1049,280 @@ fn enabling_claude_mcp_skips_when_claude_config_absent() {
     assert!(
         !home.join(".claude.json").exists(),
         "~/.claude.json should still not exist after skipped sync"
+    );
+}
+
+#[test]
+fn explicit_default_claude_dir_keeps_default_split_mcp_path() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let claude_dir = home.join(".claude");
+    fs::create_dir_all(&claude_dir).expect("create explicit default claude dir");
+
+    update_settings(AppSettings {
+        claude_config_dir: Some(claude_dir.to_string_lossy().to_string()),
+        ..AppSettings::default()
+    })
+    .expect("set explicit default claude config dir");
+
+    assert_eq!(
+        get_claude_mcp_path(),
+        home.join(".claude.json"),
+        "explicit default Claude dir should keep Claude Code's split MCP path"
+    );
+
+    let state = create_test_state().expect("create test state");
+    McpService::upsert_server(
+        &state,
+        McpServer {
+            id: "claude-default".to_string(),
+            name: "Claude Default".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "echo"
+            }),
+            apps: McpApps {
+                claude: true,
+                codex: false,
+                gemini: false,
+                grokbuild: false,
+                opencode: false,
+                hermes: false,
+                mcode: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        },
+    )
+    .expect("sync default Claude MCP");
+
+    assert!(
+        home.join(".claude.json").exists(),
+        "default split MCP file should be written at home/.claude.json"
+    );
+    assert!(
+        !claude_dir.join(".claude.json").exists(),
+        "explicit default dir should not use nested .claude/.claude.json"
+    );
+}
+
+#[test]
+fn custom_claude_dir_writes_mcp_inside_config_dir() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let custom_dir = home.join("profiles").join(".claude");
+    fs::create_dir_all(&custom_dir).expect("create custom claude dir");
+
+    update_settings(AppSettings {
+        claude_config_dir: Some(custom_dir.to_string_lossy().to_string()),
+        ..AppSettings::default()
+    })
+    .expect("set custom claude config dir");
+
+    let expected_mcp_path = custom_dir.join(".claude.json");
+    assert_eq!(
+        get_claude_mcp_path(),
+        expected_mcp_path,
+        "custom Claude dir should keep MCP state inside the config dir"
+    );
+
+    let state = create_test_state().expect("create test state");
+    McpService::upsert_server(
+        &state,
+        McpServer {
+            id: "claude-custom".to_string(),
+            name: "Claude Custom".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "echo"
+            }),
+            apps: McpApps {
+                claude: true,
+                codex: false,
+                gemini: false,
+                grokbuild: false,
+                opencode: false,
+                hermes: false,
+                mcode: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        },
+    )
+    .expect("sync custom Claude MCP");
+
+    assert!(
+        expected_mcp_path.exists(),
+        "custom Claude MCP file should be written inside custom dir"
+    );
+    assert!(
+        !home.join("profiles").join(".claude.json").exists(),
+        "custom Claude dir should not write sibling .claude.json"
+    );
+}
+
+#[test]
+fn custom_claude_dir_sync_does_not_copy_default_profile() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let home_mcp_path = home.join(".claude.json");
+    let default_profile = json!({
+        "hasCompletedOnboarding": true,
+        "projects": {
+            "/home-project": {
+                "hasTrustDialogAccepted": true
+            }
+        },
+        "mcpServers": {
+            "home-only": {
+                "type": "stdio",
+                "command": "home-command"
+            }
+        },
+        "profileSentinel": "home-profile"
+    });
+    let default_profile_text =
+        serde_json::to_string_pretty(&default_profile).expect("serialize default profile");
+    fs::write(&home_mcp_path, &default_profile_text).expect("seed default Claude profile");
+
+    let custom_dir = home.join("profiles").join("work").join(".claude");
+    fs::create_dir_all(&custom_dir).expect("create custom claude dir");
+    update_settings(AppSettings {
+        claude_config_dir: Some(custom_dir.to_string_lossy().to_string()),
+        ..AppSettings::default()
+    })
+    .expect("set custom claude config dir");
+
+    let expected_mcp_path = custom_dir.join(".claude.json");
+    assert_eq!(
+        get_claude_mcp_path(),
+        expected_mcp_path,
+        "custom Claude dir should use nested .claude.json"
+    );
+    assert!(
+        !expected_mcp_path.exists(),
+        "custom profile should start without a live MCP file"
+    );
+
+    let state = create_test_state().expect("create test state");
+    McpService::upsert_server(
+        &state,
+        McpServer {
+            id: "custom-only".to_string(),
+            name: "Custom Only".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "custom-command"
+            }),
+            apps: McpApps {
+                claude: true,
+                codex: false,
+                gemini: false,
+                grokbuild: false,
+                opencode: false,
+                hermes: false,
+                mcode: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        },
+    )
+    .expect("sync custom Claude MCP");
+
+    let text = fs::read_to_string(&expected_mcp_path).expect("read custom Claude MCP");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parse custom Claude MCP");
+    let servers = value
+        .get("mcpServers")
+        .and_then(|v| v.as_object())
+        .expect("custom profile should contain mcpServers");
+    assert!(
+        servers.contains_key("custom-only"),
+        "custom profile should contain DB-managed Claude server"
+    );
+    assert!(
+        !servers.contains_key("home-only"),
+        "custom profile should not inherit default profile MCP servers"
+    );
+    assert!(
+        value.get("hasCompletedOnboarding").is_none(),
+        "custom profile should not inherit onboarding state"
+    );
+    assert!(
+        value.get("projects").is_none(),
+        "custom profile should not inherit project trust state"
+    );
+    assert!(
+        value.get("profileSentinel").is_none(),
+        "custom profile should not inherit unrelated default profile fields"
+    );
+    assert_eq!(
+        fs::read_to_string(&home_mcp_path).expect("reread default Claude profile"),
+        default_profile_text,
+        "default Claude profile should remain unchanged"
+    );
+}
+
+#[test]
+fn custom_claude_dir_read_only_mcp_queries_do_not_create_profile() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    let home = ensure_test_home();
+    let home_mcp_path = home.join(".claude.json");
+    fs::write(
+        &home_mcp_path,
+        serde_json::to_string_pretty(&json!({
+            "mcpServers": {
+                "home-only": {
+                    "type": "stdio",
+                    "command": "home-command"
+                }
+            },
+            "profileSentinel": "home-profile"
+        }))
+        .expect("serialize default profile"),
+    )
+    .expect("seed default Claude profile");
+
+    let custom_dir = home.join("profiles").join("work").join(".claude");
+    fs::create_dir_all(&custom_dir).expect("create custom claude dir");
+    update_settings(AppSettings {
+        claude_config_dir: Some(custom_dir.to_string_lossy().to_string()),
+        ..AppSettings::default()
+    })
+    .expect("set custom claude config dir");
+
+    let expected_mcp_path = custom_dir.join(".claude.json");
+    assert!(
+        !expected_mcp_path.exists(),
+        "custom profile should start without a live MCP file"
+    );
+
+    let status =
+        futures::executor::block_on(get_claude_mcp_status()).expect("get Claude MCP status");
+    assert_eq!(
+        status.user_config_path,
+        expected_mcp_path.to_string_lossy(),
+        "status should report the custom profile MCP path"
+    );
+    assert!(
+        !status.user_config_exists,
+        "status should report missing custom profile MCP file"
+    );
+    let text =
+        futures::executor::block_on(read_claude_mcp_config()).expect("read Claude MCP config");
+    assert_eq!(text, None, "missing custom profile should read as None");
+    assert!(
+        !expected_mcp_path.exists(),
+        "read-only MCP queries should not copy or create the custom profile"
     );
 }
 
@@ -609,8 +1366,10 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
                 claude: false,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,
@@ -631,8 +1390,10 @@ fn sync_all_enabled_removes_known_disabled_but_preserves_unknown_live_entries() 
                 claude: true,
                 codex: false,
                 gemini: false,
+                grokbuild: false,
                 opencode: false,
                 hermes: false,
+                mcode: false,
             },
             description: None,
             homepage: None,

@@ -18,6 +18,11 @@ pub fn ensure_test_home() -> &'static Path {
         std::env::set_var("HOME", &base);
         #[cfg(windows)]
         std::env::set_var("USERPROFILE", &base);
+        // Claude Desktop 的配置目录在 Windows 上只读 LOCALAPPDATA（见 claude_desktop_config.rs
+        // 的 windows_local_app_data_dir），既不认 CC_SWITCH_TEST_HOME 也不认 HOME。不覆盖它，
+        // 涉及 Claude Desktop 供应商切换的测试会写进开发者真实的桌面版配置。
+        #[cfg(windows)]
+        std::env::set_var("LOCALAPPDATA", base.join("AppData").join("Local"));
         base
     })
     .as_path()
@@ -31,8 +36,10 @@ pub fn reset_test_fs() {
         ".codex",
         ".cc-switch",
         ".gemini",
+        ".grok",
         ".config",
         ".openclaw",
+        "profiles",
     ] {
         let path = home.join(sub);
         if path.exists() {
@@ -48,6 +55,15 @@ pub fn reset_test_fs() {
 
     // 重置内存中的设置缓存，确保测试环境不受上一次调用影响
     let _ = update_settings(AppSettings::default());
+}
+
+#[allow(dead_code)]
+pub fn enable_codex_official_auth_preservation() {
+    update_settings(AppSettings {
+        preserve_codex_official_auth_on_switch: true,
+        ..Default::default()
+    })
+    .expect("enable Codex official auth preservation");
 }
 
 /// 全局互斥锁，避免多测试并发写入相同的 HOME 目录。

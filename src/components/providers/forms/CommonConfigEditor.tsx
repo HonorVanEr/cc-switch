@@ -74,17 +74,22 @@ export function CommonConfigEditor({
       const config = JSON.parse(localValue);
       return {
         hideAttribution:
-          config?.attribution?.commit === "" && config?.attribution?.pr === "",
+          config?.attribution?.commit === "" &&
+          config?.attribution?.pr === "" &&
+          config?.attribution?.sessionUrl === false,
         teammates:
           config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === "1" ||
           config?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 1,
         enableToolSearch:
           config?.env?.ENABLE_TOOL_SEARCH === "true" ||
           config?.env?.ENABLE_TOOL_SEARCH === "1",
-        effortMax: config?.effortLevel === "max",
+        effortMax: config?.env?.CLAUDE_CODE_EFFORT_LEVEL === "max",
         disableAutoUpgrade:
           config?.env?.DISABLE_AUTOUPDATER === "1" ||
           config?.env?.DISABLE_AUTOUPDATER === 1,
+        disableArtifact:
+          config?.env?.CLAUDE_CODE_DISABLE_ARTIFACT === "1" ||
+          config?.env?.CLAUDE_CODE_DISABLE_ARTIFACT === 1,
       };
     } catch {
       return {
@@ -93,6 +98,7 @@ export function CommonConfigEditor({
         enableToolSearch: false,
         effortMax: false,
         disableAutoUpgrade: false,
+        disableArtifact: false,
       };
     }
   }, [localValue]);
@@ -105,7 +111,7 @@ export function CommonConfigEditor({
         switch (toggleKey) {
           case "hideAttribution":
             if (checked) {
-              config.attribution = { commit: "", pr: "" };
+              config.attribution = { commit: "", pr: "", sessionUrl: false };
             } else {
               delete config.attribution;
             }
@@ -129,10 +135,12 @@ export function CommonConfigEditor({
             }
             break;
           case "effortMax":
+            if (!config.env) config.env = {};
             if (checked) {
-              config.effortLevel = "max";
+              config.env.CLAUDE_CODE_EFFORT_LEVEL = "max";
             } else {
-              delete config.effortLevel;
+              delete config.env.CLAUDE_CODE_EFFORT_LEVEL;
+              if (Object.keys(config.env).length === 0) delete config.env;
             }
             break;
           case "disableAutoUpgrade":
@@ -141,6 +149,18 @@ export function CommonConfigEditor({
               config.env.DISABLE_AUTOUPDATER = "1";
             } else {
               delete config.env.DISABLE_AUTOUPDATER;
+              if (Object.keys(config.env).length === 0) delete config.env;
+            }
+            break;
+          case "disableArtifact":
+            // 第三方网关（如 DeepSeek）用严格 JSON Schema 校验工具定义，
+            // Artifact 工具灰度中的 \p{..} 正则会让每个请求 400；
+            // 该变量让 Claude Code 压根不把 Artifact 放进 tools 数组。
+            if (!config.env) config.env = {};
+            if (checked) {
+              config.env.CLAUDE_CODE_DISABLE_ARTIFACT = "1";
+            } else {
+              delete config.env.CLAUDE_CODE_DISABLE_ARTIFACT;
               if (Object.keys(config.env).length === 0) delete config.env;
             }
             break;
@@ -170,7 +190,7 @@ export function CommonConfigEditor({
               />
               <span>
                 {t("claudeConfig.writeCommonConfig", {
-                  defaultValue: "写入通用配置",
+                  defaultValue: "应用通用配置",
                 })}
               </span>
             </label>
@@ -244,10 +264,22 @@ export function CommonConfigEditor({
             />
             <span>{t("claudeConfig.disableAutoUpgrade")}</span>
           </label>
+          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={toggleStates.disableArtifact}
+              onChange={(e) =>
+                handleToggle("disableArtifact", e.target.checked)
+              }
+              className="w-4 h-4 text-blue-500 bg-white dark:bg-gray-800 border-border-default rounded focus:ring-blue-500 dark:focus:ring-blue-400 focus:ring-2"
+            />
+            <span>{t("claudeConfig.disableArtifact")}</span>
+          </label>
         </div>
         <JsonEditor
           value={localValue}
           onChange={handleLocalChange}
+          ariaLabel={t("provider.configJson")}
           placeholder={`{
   "env": {
     "ANTHROPIC_BASE_URL": "https://your-api-endpoint.com",
@@ -255,7 +287,7 @@ export function CommonConfigEditor({
   }
 }`}
           darkMode={isDarkMode}
-          rows={14}
+          rows={3}
           showValidation={true}
           language="json"
         />
@@ -329,6 +361,7 @@ export function CommonConfigEditor({
           <JsonEditor
             value={commonConfigSnippet}
             onChange={onCommonConfigSnippetChange}
+            ariaLabel={t("claudeConfig.editCommonConfigTitle")}
             placeholder={`{
   "env": {
     "ANTHROPIC_BASE_URL": "https://your-api-endpoint.com"

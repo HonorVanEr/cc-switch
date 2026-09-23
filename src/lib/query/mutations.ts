@@ -5,10 +5,17 @@ import { providersApi, sessionsApi, settingsApi, type AppId } from "@/lib/api";
 import type { DeleteSessionOptions } from "@/lib/api/sessions";
 import type { SwitchResult } from "@/lib/api/providers";
 import type { Provider, SessionMeta, Settings } from "@/types";
-import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  extractErrorMessage,
+  translatePiProviderMutationError,
+} from "@/utils/errorUtils";
 import { generateUUID } from "@/utils/uuid";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import { invalidateHermesProviderCaches } from "@/hooks/useHermes";
+import { proxyKeys } from "@/lib/query/proxy";
+import { usageKeys } from "@/lib/query/usage";
+import { invalidatePiProviderCaches } from "@/lib/query/pi";
+import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
@@ -19,11 +26,46 @@ export const useAddProviderMutation = (appId: AppId) => {
       providerInput: Omit<Provider, "id"> & {
         providerKey?: string;
         addToLive?: boolean;
+        ensureClaudeDesktopOfficialSeed?: boolean;
+        ensureGrokBuildOfficialSeed?: boolean;
       },
     ) => {
+      const {
+        providerKey: _providerKey,
+        addToLive,
+        ensureClaudeDesktopOfficialSeed,
+        ensureGrokBuildOfficialSeed,
+        ...rest
+      } = providerInput;
+
+      if (appId === "claude-desktop" && ensureClaudeDesktopOfficialSeed) {
+        await providersApi.ensureClaudeDesktopOfficialProvider();
+        const providers = await providersApi.getAll(appId);
+        const officialProvider = providers["claude-desktop-official"];
+        if (!officialProvider) {
+          throw new Error("Claude Desktop official provider was not created");
+        }
+        return officialProvider;
+      }
+
+      if (appId === "grokbuild" && ensureGrokBuildOfficialSeed) {
+        await providersApi.ensureGrokBuildOfficialProvider();
+        const providers = await providersApi.getAll(appId);
+        const officialProvider = providers[GROKBUILD_OFFICIAL_PROVIDER_ID];
+        if (!officialProvider) {
+          throw new Error("Grok Build official provider was not created");
+        }
+        return officialProvider;
+      }
+
       let id: string;
 
-      if (appId === "opencode" || appId === "openclaw" || appId === "hermes") {
+      if (
+        appId === "opencode" ||
+        appId === "openclaw" ||
+        appId === "hermes" ||
+        appId === "pi"
+      ) {
         if (
           providerInput.category === "omo" ||
           providerInput.category === "omo-slim"
@@ -39,8 +81,6 @@ export const useAddProviderMutation = (appId: AppId) => {
       } else {
         id = generateUUID();
       }
-
-      const { providerKey: _providerKey, addToLive, ...rest } = providerInput;
 
       const newProvider: Provider = {
         ...rest,
@@ -79,7 +119,6 @@ export const useAddProviderMutation = (appId: AppId) => {
       if (appId === "hermes") {
         await invalidateHermesProviderCaches(queryClient);
       }
-
       try {
         await providersApi.updateTrayMenu();
       } catch (trayError) {
@@ -99,13 +138,24 @@ export const useAddProviderMutation = (appId: AppId) => {
       );
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const rawDetail = extractErrorMessage(error);
+      const detail =
+        (appId === "pi"
+          ? translatePiProviderMutationError(rawDetail, t)
+          : "") ||
+        rawDetail ||
+        t("common.unknown");
       toast.error(
         t("notifications.addFailed", {
           defaultValue: "添加供应商失败: {{error}}",
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
     },
   });
 };
@@ -125,8 +175,16 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       await providersApi.update(provider, appId, originalId);
       return provider;
     },
-    onSuccess: async () => {
+    onSuccess: async (provider, variables) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({
+        queryKey: usageKeys.script(provider.id, appId),
+      });
+      if (variables.originalId && variables.originalId !== provider.id) {
+        await queryClient.invalidateQueries({
+          queryKey: usageKeys.script(variables.originalId, appId),
+        });
+      }
       if (appId === "openclaw") {
         await queryClient.invalidateQueries({
           queryKey: openclawKeys.health,
@@ -145,13 +203,24 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       );
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const rawDetail = extractErrorMessage(error);
+      const detail =
+        (appId === "pi"
+          ? translatePiProviderMutationError(rawDetail, t)
+          : "") ||
+        rawDetail ||
+        t("common.unknown");
       toast.error(
         t("notifications.updateFailed", {
           defaultValue: "更新供应商失败: {{error}}",
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
     },
   });
 };
@@ -191,7 +260,6 @@ export const useDeleteProviderMutation = (appId: AppId) => {
       if (appId === "hermes") {
         await invalidateHermesProviderCaches(queryClient);
       }
-
       try {
         await providersApi.updateTrayMenu();
       } catch (trayError) {
@@ -211,13 +279,24 @@ export const useDeleteProviderMutation = (appId: AppId) => {
       );
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const rawDetail = extractErrorMessage(error);
+      const detail =
+        (appId === "pi"
+          ? translatePiProviderMutationError(rawDetail, t)
+          : "") ||
+        rawDetail ||
+        t("common.unknown");
       toast.error(
         t("notifications.deleteFailed", {
           defaultValue: "删除供应商失败: {{error}}",
           error: detail,
         }),
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
     },
   });
 };
@@ -232,11 +311,20 @@ export const useSwitchProviderMutation = (appId: AppId) => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      if (appId === "claude-desktop") {
+        await queryClient.invalidateQueries({ queryKey: proxyKeys.status });
+        await queryClient.invalidateQueries({
+          queryKey: ["claudeDesktopStatus"],
+        });
+      }
 
       // OpenCode/OpenClaw: also invalidate live provider IDs cache to update button state
       if (appId === "opencode") {
         await queryClient.invalidateQueries({
           queryKey: ["opencodeLiveProviderIds"],
+        });
+        await queryClient.invalidateQueries({
+          queryKey: ["opencode", "runtime-models"],
         });
         await queryClient.invalidateQueries({
           queryKey: ["omo", "current-provider-id"],
@@ -259,7 +347,6 @@ export const useSwitchProviderMutation = (appId: AppId) => {
       if (appId === "hermes") {
         await invalidateHermesProviderCaches(queryClient);
       }
-
       try {
         await providersApi.updateTrayMenu();
       } catch (trayError) {
@@ -288,6 +375,11 @@ export const useSwitchProviderMutation = (appId: AppId) => {
           },
         },
       );
+    },
+    onSettled: async () => {
+      if (appId === "pi") {
+        await invalidatePiProviderCaches(queryClient);
+      }
     },
   });
 };
@@ -345,6 +437,9 @@ export const useSaveSettingsMutation = () => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["settings"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["opencode", "runtime-models"],
+      });
     },
   });
 };

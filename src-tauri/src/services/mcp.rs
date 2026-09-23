@@ -25,7 +25,15 @@ impl McpService {
             .map(|s| s.apps.clone())
             .unwrap_or_default();
 
-        state.db.save_mcp_server(&server)?;
+        if server.apps.mcode || prev_apps.mcode {
+            mcp::mcode::sync_and_commit(
+                &server.id,
+                server.apps.mcode.then_some(&server.server),
+                || state.db.save_mcp_server(&server),
+            )?;
+        } else {
+            state.db.save_mcp_server(&server)?;
+        }
 
         // 处理禁用：若旧版本启用但新版本取消，则需要从该应用的 live 配置移除
         if prev_apps.claude && !server.apps.claude {
@@ -36,6 +44,9 @@ impl McpService {
         }
         if prev_apps.gemini && !server.apps.gemini {
             Self::remove_server_from_app(state, &server.id, &AppType::Gemini)?;
+        }
+        if prev_apps.grokbuild && !server.apps.grokbuild {
+            Self::remove_server_from_app(state, &server.id, &AppType::GrokBuild)?;
         }
         if prev_apps.opencode && !server.apps.opencode {
             Self::remove_server_from_app(state, &server.id, &AppType::OpenCode)?;
@@ -55,7 +66,11 @@ impl McpService {
         let server = state.db.get_all_mcp_servers()?.shift_remove(id);
 
         if let Some(server) = server {
-            state.db.delete_mcp_server(id)?;
+            if server.apps.mcode {
+                mcp::mcode::sync_and_commit(id, None, || state.db.delete_mcp_server(id))?;
+            } else {
+                state.db.delete_mcp_server(id)?;
+            }
 
             // 从所有应用的 live 配置中移除
             Self::remove_server_from_all_apps(state, id, &server)?;
@@ -72,15 +87,23 @@ impl McpService {
         app: AppType,
         enabled: bool,
     ) -> Result<(), AppError> {
-        let mut servers = state.db.get_all_mcp_servers()?;
-
-        if let Some(server) = servers.get_mut(server_id) {
-            server.apps.set_enabled_for(&app, enabled);
-            state.db.save_mcp_server(server)?;
-
+        if app == AppType::Mcode {
+            if let Some(server) = state.db.get_all_mcp_servers()?.get(server_id) {
+                mcp::mcode::sync_and_commit(server_id, enabled.then_some(&server.server), || {
+                    state
+                        .db
+                        .update_mcp_server_app_enabled(server_id, &app, enabled)
+                })?;
+            }
+            return Ok(());
+        }
+        if let Some(server) = state
+            .db
+            .update_mcp_server_app_enabled(server_id, &app, enabled)?
+        {
             // 同步到对应应用
             if enabled {
-                Self::sync_server_to_app(state, server, &app)?;
+                Self::sync_server_to_app(state, &server, &app)?;
             } else {
                 Self::remove_server_from_app(state, server_id, &app)?;
             }
@@ -92,6 +115,9 @@ impl McpService {
     /// 将 MCP 服务器同步到所有启用的应用
     fn sync_server_to_apps(_state: &AppState, server: &McpServer) -> Result<(), AppError> {
         for app in server.apps.enabled_apps() {
+            if app == AppType::Mcode {
+                continue; // Already written before saving the managed state.
+            }
             Self::sync_server_to_app_no_config(server, &app)?;
         }
 
@@ -112,12 +138,22 @@ impl McpService {
             AppType::Claude => {
                 mcp::sync_single_server_to_claude(&Default::default(), &server.id, &server.server)?;
             }
+            AppType::ClaudeDesktop => {
+                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
+            }
             AppType::Codex => {
                 // Codex uses TOML format, must use the correct function
                 mcp::sync_single_server_to_codex(&Default::default(), &server.id, &server.server)?;
             }
             AppType::Gemini => {
                 mcp::sync_single_server_to_gemini(&Default::default(), &server.id, &server.server)?;
+            }
+            AppType::GrokBuild => {
+                mcp::sync_single_server_to_grokbuild(
+                    &Default::default(),
+                    &server.id,
+                    &server.server,
+                )?;
             }
             AppType::OpenCode => {
                 mcp::sync_single_server_to_opencode(
@@ -134,6 +170,8 @@ impl McpService {
             AppType::Hermes => {
                 mcp::sync_single_server_to_hermes(&Default::default(), &server.id, &server.server)?;
             }
+            AppType::Mcode => mcp::mcode::sync(&server.id, Some(&server.server))?,
+            AppType::Pi => {}
         }
         Ok(())
     }
@@ -146,6 +184,9 @@ impl McpService {
     ) -> Result<(), AppError> {
         // 从所有曾启用的应用中移除
         for app in server.apps.enabled_apps() {
+            if app == AppType::Mcode {
+                continue; // Already removed before deleting the managed record.
+            }
             Self::remove_server_from_app(state, id, &app)?;
         }
         Ok(())
@@ -154,8 +195,12 @@ impl McpService {
     fn remove_server_from_app(_state: &AppState, id: &str, app: &AppType) -> Result<(), AppError> {
         match app {
             AppType::Claude => mcp::remove_server_from_claude(id)?,
+            AppType::ClaudeDesktop => {
+                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
+            }
             AppType::Codex => mcp::remove_server_from_codex(id)?,
             AppType::Gemini => mcp::remove_server_from_gemini(id)?,
+            AppType::GrokBuild => mcp::remove_server_from_grokbuild(id)?,
             AppType::OpenCode => {
                 mcp::remove_server_from_opencode(id)?;
             }
@@ -166,26 +211,67 @@ impl McpService {
             AppType::Hermes => {
                 mcp::remove_server_from_hermes(id)?;
             }
+            AppType::Mcode => mcp::mcode::sync(id, None)?,
+            AppType::Pi => {}
         }
         Ok(())
     }
 
-    /// 手动同步所有启用的 MCP 服务器到对应的应用
+    /// 手动同步所有启用的 MCP 服务器到对应的应用。
+    ///
+    /// Best-effort：单个应用投影失败（如 ~/.claude.json 坏 JSON）不阻断
+    /// 其余应用——各应用的 live 文件互相独立，一处损坏没有理由让其他
+    /// 应用的 MCP 状态陈旧。全部跑完后若有失败，聚合成一个错误上报，
+    /// 保留调用方的可见性。
     pub fn sync_all_enabled(state: &AppState) -> Result<(), AppError> {
         let servers = Self::get_all_servers(state)?;
 
+        let mut failures: Vec<String> = Vec::new();
         for app in AppType::all() {
-            if matches!(app, AppType::OpenClaw) {
-                continue;
+            if let Err(err) = Self::project_servers_to_app(state, &servers, &app) {
+                log::warn!("同步 MCP 到 {app:?} 失败: {err}");
+                failures.push(format!("{}: {err}", app.as_str()));
             }
+        }
 
-            for server in servers.values() {
-                if server.apps.is_enabled_for(&app) {
-                    Self::sync_server_to_app(state, server, &app)?;
-                } else {
-                    Self::remove_server_from_app(state, &server.id, &app)?;
-                }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Message(format!(
+                "部分应用 MCP 同步失败: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
+    /// 只把启用状态投影到单个应用。某个应用的 live 被整体重写后用它做
+    /// 定向重投影，避免把无关应用的失败面（如 ~/.claude.json 坏 JSON）
+    /// 牵连进目标应用的关键路径。
+    pub fn sync_enabled_for_app(state: &AppState, app: &AppType) -> Result<(), AppError> {
+        let servers = Self::get_all_servers(state)?;
+        Self::project_servers_to_app(state, &servers, app)
+    }
+
+    fn project_servers_to_app(
+        state: &AppState,
+        servers: &IndexMap<String, McpServer>,
+        app: &AppType,
+    ) -> Result<(), AppError> {
+        if matches!(
+            app,
+            AppType::OpenClaw | AppType::ClaudeDesktop | AppType::Pi
+        ) {
+            return Ok(());
+        }
+
+        for server in servers.values() {
+            if server.apps.is_enabled_for(app) {
+                Self::sync_server_to_app(state, server, app)?;
+            } else if !matches!(app, AppType::Mcode) {
+                Self::remove_server_from_app(state, &server.id, app)?;
             }
+            // MCode's false flag also covers pre-existing, unmanaged servers.
+            // Only explicit disable/delete operations may remove those entries.
         }
 
         Ok(())
@@ -268,8 +354,8 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 同步到对应应用 live 配置
-                    Self::sync_server_to_apps(state, &to_save)?;
+                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
+                    // 显式编辑、启用/禁用或手动同步时再执行写回。
                 }
             }
         }
@@ -306,8 +392,8 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 同步到对应应用 live 配置
-                    Self::sync_server_to_apps(state, &to_save)?;
+                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
+                    // 显式编辑、启用/禁用或手动同步时再执行写回。
                 }
             }
         }
@@ -344,12 +430,38 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 同步到对应应用 live 配置
-                    Self::sync_server_to_apps(state, &to_save)?;
+                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
+                    // 显式编辑、启用/禁用或手动同步时再执行写回。
                 }
             }
         }
 
+        Ok(new_count)
+    }
+
+    /// 从 Grok Build 的 `[mcp_servers]` 导入 MCP。
+    pub fn import_from_grokbuild(state: &AppState) -> Result<usize, AppError> {
+        let mut temp_config = crate::app_config::MultiAppConfig::default();
+        let count = crate::mcp::import_from_grokbuild(&mut temp_config)?;
+        let mut new_count = 0;
+
+        if count > 0 {
+            if let Some(servers) = &temp_config.mcp.servers {
+                let mut existing = state.db.get_all_mcp_servers()?;
+                for server in servers.values() {
+                    let to_save = if let Some(existing_server) = existing.get(&server.id) {
+                        let mut merged = existing_server.clone();
+                        merged.apps.grokbuild = true;
+                        merged
+                    } else {
+                        new_count += 1;
+                        server.clone()
+                    };
+                    state.db.save_mcp_server(&to_save)?;
+                    existing.insert(to_save.id.clone(), to_save);
+                }
+            }
+        }
         Ok(new_count)
     }
 
@@ -382,8 +494,8 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 同步到对应应用 live 配置
-                    Self::sync_server_to_apps(state, &to_save)?;
+                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
+                    // 显式编辑、启用/禁用或手动同步时再执行写回。
                 }
             }
         }
@@ -420,12 +532,51 @@ impl McpService {
                     state.db.save_mcp_server(&to_save)?;
                     existing.insert(to_save.id.clone(), to_save.clone());
 
-                    // 同步到对应应用 live 配置
-                    Self::sync_server_to_apps(state, &to_save)?;
+                    // 导入是读取已有配置，不应反向写回任何应用的 live 配置。
+                    // 显式编辑、启用/禁用或手动同步时再执行写回。
                 }
             }
         }
 
         Ok(new_count)
+    }
+
+    /// 从所有支持 MCP 的应用导入服务器，返回新导入的数量。
+    ///
+    /// Best-effort：单个应用导入失败（如坏 config.toml）不阻断其余应用；
+    /// 全部跑完后若有失败，聚合成一个错误上报——历史实现逐应用
+    /// `unwrap_or(0)` 吞错，坏文件只会表现为"导入成功 0 个"，用户
+    /// 无从得知哪个应用出了问题。
+    pub fn import_from_all_apps(state: &AppState) -> Result<usize, AppError> {
+        let mut total = 0;
+        let mut failures: Vec<String> = Vec::new();
+
+        let results: [(&str, Result<usize, AppError>); 7] = [
+            ("claude", Self::import_from_claude(state)),
+            ("codex", Self::import_from_codex(state)),
+            ("gemini", Self::import_from_gemini(state)),
+            ("grokbuild", Self::import_from_grokbuild(state)),
+            ("opencode", Self::import_from_opencode(state)),
+            ("hermes", Self::import_from_hermes(state)),
+            ("mcode", mcp::mcode::import(state)),
+        ];
+        for (app, result) in results {
+            match result {
+                Ok(count) => total += count,
+                Err(err) => {
+                    log::warn!("从 {app} 导入 MCP 失败: {err}");
+                    failures.push(format!("{app}: {err}"));
+                }
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(total)
+        } else {
+            Err(AppError::Message(format!(
+                "已导入 {total} 个，部分应用导入失败: {}",
+                failures.join("; ")
+            )))
+        }
     }
 }

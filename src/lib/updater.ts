@@ -2,36 +2,11 @@ import { getVersion } from "@tauri-apps/api/app";
 
 export type UpdateChannel = "stable" | "beta";
 
-export type UpdaterPhase =
-  | "idle"
-  | "checking"
-  | "available"
-  | "downloading"
-  | "installing"
-  | "restarting"
-  | "upToDate"
-  | "error";
-
 export interface UpdateInfo {
   currentVersion: string;
   availableVersion: string;
   notes?: string;
   pubDate?: string;
-}
-
-export interface UpdateProgressEvent {
-  event: "Started" | "Progress" | "Finished";
-  total?: number;
-  downloaded?: number;
-}
-
-export interface UpdateHandle {
-  version: string;
-  notes?: string;
-  date?: string;
-  downloadAndInstall: (
-    onProgress?: (e: UpdateProgressEvent) => void,
-  ) => Promise<void>;
 }
 
 export interface CheckOptions {
@@ -50,10 +25,9 @@ export async function getCurrentVersion(): Promise<string> {
 export async function checkForUpdate(
   _opts: CheckOptions = {},
 ): Promise<
-  | { status: "up-to-date" }
-  | { status: "available"; info: UpdateInfo; update: UpdateHandle }
+  { status: "up-to-date" } | { status: "available"; info: UpdateInfo }
 > {
-  const { checkUpdate, installUpdate } = await import("@tauri-apps/api/updater");
+  const { checkUpdate } = await import("@tauri-apps/api/updater");
 
   const currentVersion = await getCurrentVersion();
   const result = await checkUpdate();
@@ -70,19 +44,25 @@ export async function checkForUpdate(
     pubDate: manifest.date ?? undefined,
   };
 
-  const updateHandle: UpdateHandle = {
-    version: manifest.version ?? "",
-    notes: manifest.body ?? undefined,
-    date: manifest.date ?? undefined,
-    async downloadAndInstall(_onProgress?: (e: UpdateProgressEvent) => void) {
-      await installUpdate();
-    },
-  };
-
-  return { status: "available", info, update: updateHandle };
+  return { status: "available", info };
 }
 
-export async function relaunchApp(): Promise<void> {
+/**
+ * 下载并安装可用更新，然后重启应用（Tauri v1 前端直连方式）。
+ * 无可用更新时返回 false；成功安装后应用会重启，通常不会返回。
+ */
+export async function installUpdateAndRestart(): Promise<boolean> {
+  const { checkUpdate, installUpdate } = await import(
+    "@tauri-apps/api/updater"
+  );
   const { relaunch } = await import("@tauri-apps/api/process");
+
+  const result = await checkUpdate();
+  if (!result.shouldUpdate || !result.manifest) {
+    return false;
+  }
+
+  await installUpdate();
   await relaunch();
+  return true;
 }
