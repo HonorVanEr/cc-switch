@@ -50,7 +50,9 @@ const SelectContent = React.forwardRef<
         className={cn(
           "p-1",
           position === "popper" &&
-            "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]",
+          // 用 min-h 而非 h：旧 WebView(WebKitGTK) 会把显式 height 当作视口实际高度，
+          // 导致下拉列表塌缩为一行；min-h 仅作下限，内容可正常撑开。
+            "min-h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]",
         )}
       >
         {children}
