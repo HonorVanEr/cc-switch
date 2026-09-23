@@ -33,4 +33,7 @@ export const motion = {
 
 export const AnimatePresence = AnimatePresenceStub;
 
-export default { motion, AnimatePresence };
+// stub 不实现真实动画，统一视为“不偏好减少动画”。
+export const useReducedMotion = (): boolean => false;
+
+export default { motion, AnimatePresence, useReducedMotion };

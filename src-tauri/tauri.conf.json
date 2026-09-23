@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "CC Switch",
-    "version": "3.15.1-fyr"
+    "version": "3.20.3-fyr-tauri-v1"
   },
   "tauri": {
     "allowlist": {
