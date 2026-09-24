@@ -116,15 +116,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem(LEGACY_DISMISSED_KEY);
   }, []);
 
-  // 应用启动时自动检查更新
-  useEffect(() => {
-    // 延迟1秒后检查，避免影响启动体验
-    const timer = setTimeout(() => {
-      checkUpdate().catch(console.error);
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [checkUpdate]);
+  // 移除应用启动时的自动检查更新：
+  // 1) 本分支是降级 fork（版本号 3.20.3-fyr-tauri-v1），与线上 stable 版本体系不同，
+  //    自动检查永远会误报「有新版本」，每次打开都出现更新提示。
+  // 2) 保留设置页的「检查更新」手动按钮（AboutSection 的 handleCheckUpdate），
+  //    需要时由用户主动触发。
 
   const value: UpdateContextValue = {
     hasUpdate,
